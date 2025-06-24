@@ -1,0 +1,145 @@
+---
+title: "ShootingNYPD"
+author: "Anonymous"
+date: "2025-05-29"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+# NYPD Shooting Incidents Analysis
+
+This is an analysis of historic shooting incidents in NY based on NYPD data obtained through data.gov.
+
+## Import the data
+
+The dataset analyzed below is a dataset provided by the City of New York.
+It contains the data of every shooting incindent that occured in New York City from 2006 up to the end of the last year.
+The data includes information about location, time, and victim and perpetrator demographics if available.
+
+First we need to import the data from the source, so that the analysis can be reproduced easily.
+
+```{r import_data}
+shooting_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+shooting <- read_csv(shooting_url)
+```
+
+## Tidy the data
+
+Now let's clean up the data. We need to change the data types of some variables and get rid of some columns which are not needed.
+Let's take a quick look at the data and the columns with types, so we see what needs changing.
+
+
+``` {r quick_look}
+shooting
+```
+
+It appears that we need to change the data type of INCIDENT_KEY, PRECINCT, JURISDICTION_CODE to factor (character) and the data type of OCCUR_DATE to actually be a 'date' type and not a string. We'll also get rid of the following variables, as they won't be used in the analysis: X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat.
+
+```{r tidy_data}
+shooting <- shooting %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE)) %>%
+  mutate(INCIDENT_KEY = as.character(INCIDENT_KEY)) %>%
+  mutate(PRECINCT = as.character(PRECINCT)) %>%
+  mutate(JURISDICTION_CODE = as.character(JURISDICTION_CODE)) %>%
+  select(-c(X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat))
+shooting
+```
+We can see some NA values immediately, let's check exactly how many missing values are there.
+
+```{r NA_values}
+na_counts <- shooting %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "NA_count")
+na_counts
+```
+
+There are many missing values for some columns. We'll need to deal with them somehow (remove, replace, or imput) or ignore those columns in our analysis. However, the missing values are mostly location descriptions - we can ignore those, as we won't use them in the further analysis.
+
+We are also missing perpetrator data for many cases - this makes sense, as the perpetrator can be unknown. If we wanted to do an analysis using the perpetrator data in some way, we could include an 'unknown perpetrator' category as a special case for perpetrator's age, sex, and race.
+
+However, the further analysis below will primarily look into the borough, year, and time of day variables.
+
+## Add Visualizations and Analysis
+
+### In which boroughs are there the most murders?
+
+Is it Manhattan or Brooklyn or another one?
+
+```{r by_boro_analysis}
+murders_by_boro <- shooting %>%
+  filter(STATISTICAL_MURDER_FLAG = TRUE) %>%
+  group_by(BORO) %>%
+  summarise(num_of_murders = n())
+
+murders_by_boro %>%
+  ggplot(aes(x = BORO, y = num_of_murders)) +
+    geom_col() +
+    labs(x = "Borough", y = "Total Number of Murders 2006-2024")
+
+murders_by_boro
+```
+The most shootings occur in Brooklyn and Bronx and the fewest in Staten Island. 
+An interesting question would be, how many are there per unit of population? However, that would need an additional data set.
+
+
+### Shooting incidents over years
+
+Is there any yearly trend in the number of shooting incidents?
+
+```{r over_years_analysis}
+shooting_over_year <- shooting %>%
+  group_by(YEAR = year(OCCUR_DATE)) %>%
+  summarise(num_of_shootings = n())
+
+shooting_over_year %>%
+  ggplot(aes(x = YEAR, y = num_of_shootings)) +
+    geom_col() +
+    labs(x = "Year", y = "Number of Shootings")
+```
+
+It appears that there was a trend of less shootings happening year over year between 2006 and 2019. However, the number of shootings got back to around 2000 per year in 2020-2022. It's only getting lower again in the last two years.
+Was the return of the numbers in 2020 COVID related? Or maybe there is some other factor? We would need to consider some additional data sources, but this information may point us in an interesting direction.
+
+### At what times do most of the shootings occur?
+
+Do more shootings occur during the day or at night?
+
+```{r by_time_analysis}
+shooting <- shooting %>% mutate(occur_hour = hour(OCCUR_TIME))
+
+shooting %>% ggplot() +
+  geom_bar(aes(x = occur_hour), fill = "lightblue") +
+    labs(x = "Occurence Time", y = "Number of Shootings")
+```
+
+There is a clear hourly trend in the number of shootings. The most happen around midnight and the fewest between 6 AM and 11 AM.
+
+Is this the same for shootings ending in murder?
+
+```{r}
+shooting %>% filter(STATISTICAL_MURDER_FLAG == TRUE) %>%
+  ggplot() +
+    geom_bar(aes(x = occur_hour), fill = "steelblue") 
+      labs(x = "Occurence Time", y = "Number of Shootings")
+      
+```
+
+The distribution is very similar for murders indeed. At first sight, the fact that a shooting ends in a murder does not appear to depend on the time of day.
+
+## Add Bias Identification
+
+To conclude, in the analysis above, we've looked into data on shooting incidents in New York from 2006 to 2024. The data originated from NYPD and was provided by NYC through data.gov. We've identified relationships of the shooting incidents with NY's boroughs, time of day, and also a yearly trend.
+
+As in any analysis there are some sources of possible bias that need to be looked into.
+
+First of all, the data source is NYPD, it's not guaranteed, that they take note of all and every shooting incident in the city. Some may go untracked due for different reasons. Not having other source of similar data it's difficult to precisely account for this bias.
+
+Another important source of bias may be me, the author of this analysis. I may not be involved in the topic in any way, but as every human I have my emotions and opinions on shooting incidents. Those may be causing why I chose those factors that I looked into in the analysis. I've looked into a few possible different factors related to shooting incidents to try to mitigate my bias. However, some other people may be more interested in what are the perpetrators or victims profiles or in what kinds of locations the shootings took place. There are many possible ways of looking into even just this single dataset.
+
+```{r session_info}
+sessionInfo()
+```
