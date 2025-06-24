@@ -1,0 +1,224 @@
+---
+title: "COVID"
+author: "Anonymous"
+date: "2025-06-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+```
+
+# COVID data analysis
+
+This is an analysis of COVID-19 cases and deaths chronological data obtained from John Hopkins through github.com. This dataset contains day by day, per country and region numbers of COVID cases and deaths between 2020-01-22 and 2023-03-09.
+
+## Importing the data
+
+First, let's set up the variables to point to the right github.com urls.
+
+```{r build_urls}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_US.csv",
+               "time_series_covid19_confirmed_global.csv",
+               "time_series_covid19_deaths_US.csv",
+               "time_series_covid19_deaths_global.csv")
+
+urls <- str_c(url_in, file_names)
+```
+
+Now, let's load the data from those CSVs into variables.
+
+```{r import_data}
+global_cases <- read_csv(urls[2])
+global_deaths <- read_csv(urls[4])
+US_cases <- read_csv(urls[1])
+US_deaths <- read_csv(urls[3])
+```
+
+## Tidying up the data
+
+The data is in a wide format, there are separate columns for each date. We'd like to pivot it, so we have row by row data, then tidy up the variable names to be more R friendly, and finally, remove the Lat and Long vars which we don't need. It's important to note at this point that deaths and cases are cumulative.
+
+```{r tidy_global}
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c('Province/State', 'Country/Region', 'Lat', 'Long'),
+              names_to = "date",
+              values_to = "cases") %>%
+     select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c('Province/State', 'Country/Region', 'Lat', 'Long'),
+              names_to = "date",
+              values_to = "deaths") %>%
+     select(-c(Lat, Long))
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`,
+         Province_State = `Province/State`) %>%
+  mutate(date = mdy(date))
+
+global <- global %>% filter(cases > 0)
+
+summary(global)
+```
+
+Now we'll take care of the US data in the same way as above for the global data.
+
+```{r tidy_US}
+
+US_cases <- US_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+    names_to = "date", 
+    values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+summary(US_cases)
+
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+    names_to = "date", 
+    values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+summary(US_deaths)
+
+
+US <- US_cases %>% full_join(US_deaths)
+
+summary(US)
+
+```
+
+Now let's combine the two datasets into a single one by unifying the keys and also add a population variable to the global data. The population numbers are coming from the same dataset as an additional lookup table. They will allow us to calculate statistics per population numbers.
+
+```{R unify}
+
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid_lookup <- read_csv(uid_lookup_url)
+
+global <- global %>%
+  left_join(uid_lookup, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS, iso2, iso3, code3, Admin2, Lat, Long_))
+
+global <- global %>%
+  mutate(Key = coalesce(Combined_Key.x, Combined_Key.y)) %>%
+  select(-c(Combined_Key.x, Combined_Key.y))
+
+summary(global)
+
+```
+
+## Analyze and visualize
+
+We'll do some basic data analysis and visualization now. First let's create a deaths per million population per state column.
+
+```{r}
+us_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+  Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select (Province_State, Country_Region, date,
+  cases, deaths, deaths_per_mill, Population) %>%
+ungroup()
+
+us_by_state <- us_by_state %>% 
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+```
+
+```{r}
+US_totals <- us_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000/Population) %>%
+  select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+ungroup()
+
+US_totals <- US_totals %>% 
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals
+```
+
+```{r visualize}
+US_totals %>%
+  filter(cases >0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y=deaths, color = "deaths")) +
+  geom_point(aes(y=deaths, color = "deaths")) +
+  scale_y_log10()
+
+```
+
+Now let's look into the data for Poland and how the number of new cases evolved over time. We'll use the lubridate library to group the data by month to see clearly if there are any seasonal trends.
+
+```{r poland}
+poland_monthly <- global %>%
+  filter(Country_Region == "Poland") %>%
+  mutate(new_cases = cases - lag(cases), 
+         new_deaths = deaths - lag(deaths)) %>%
+  group_by(month = lubridate::floor_date(date, 'month')) %>%
+  summarize(monthly_cases = sum(new_cases),
+            monthly_deaths = sum(new_deaths))
+
+poland_monthly
+```
+
+Let's graph this data, so the trends are visible better.
+
+```{r}
+poland_monthly %>%
+  ggplot() +
+  geom_col(aes(x = month, y = monthly_cases), fill = "steelblue")
+```
+We can see a clear seasonal trend. There are the fewest cases during the summer months.
+
+## Modeling
+
+Now let's try doing some simple modeling. Above we have seen that cases and deaths seem related. Can we look deeper into it? Let's create a linear model and see what it predicts.
+Then we'll visually compare the prediction to the actual values.
+
+```{r modeling}
+mod <- lm(deaths ~ cases, data = US_totals)
+
+US_totals <- US_totals %>% mutate(pred_deaths = predict(mod))
+
+US_totals %>% ggplot() +
+  geom_line(aes(x = date, y = deaths), color = "red") +
+  geom_line(aes(x = date, y = pred_deaths), color = "blue")
+
+summary(mod)
+```
+
+Summary of the model tells are that deaths are indeed related to cases and the p-value for this relationship is <0.001, showing that the relationship is highly statistically significant.
+
+## Bias Identification
+
+COVID pandemic was an important factor in the lifes of many people and it has definitely impacted me some way. I had to conform to many different restrictions and not always agree with them. Some of my friends and family members were sick. This may lead to my thinking on COVID being biased. I've tried to approach the analysis from a balanced an objective way, focusing on the data available.
+
+
+```{r environment}
+sessionInfo()
+```
